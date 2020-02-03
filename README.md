@@ -1,6 +1,6 @@
 # Streamline processing toolbox
 
-
+Various algorithms to process/manipulate streamlines in a tractogram.
 
 ## Installation
 
@@ -18,7 +18,7 @@ import streamline_processing
 
 ## Usage
 
-To e.g. smooth the streamlines ina tractogram using splines, do the following:
+For instance, in order to smooth all streamlines in a tractogram using Splines, do the following:
 
 ```python
 import streamline_processing
