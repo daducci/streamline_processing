@@ -4,6 +4,7 @@ import cython
 import numpy as np
 cimport numpy as np
 import nibabel
+from os.path import splitext, getsize
 from amico.progressbar import ProgressBar
 
 
@@ -14,17 +15,18 @@ cdef extern from "spline_smoothing_c.cpp":
     ) nogil
 
 
-cpdef spline_smoothing( trk_filename_in, trk_filename_out, control_point_ratio = 0.25, segment_len = 1.0, verbose = False ) :
+cpdef spline_smoothing( filename_tractogram, filename_tractogram_out=None, control_point_ratio=0.25, segment_len=1.0, verbose=True ) :
     """Smooth each streamline in the input tractogram using Catmull-Rom splines.
        More info at http://algorithmist.net/docs/catmullrom.pdf.
 
     Parameters
     ----------
-    trk_filename_in : string
-        Path to the .trk file containing the tractogram to process.
+    filename_tractogram : string
+        Path to the file (.trk or .tck) containing the streamlines to process.
 
-    trk_filename_out : string
-        Path to the .trk where to store the filtered tractogram.
+    filename_tractogram_out : string
+        Path to the file where to store the filtered tractogram. If not specified (default),
+        the new file will be created by appending '_smooth' to the input filename.
 
     control_point_ratio : float
         Percent of control points to use in the interpolating spline (default : 0.25).
@@ -33,27 +35,41 @@ cpdef spline_smoothing( trk_filename_in, trk_filename_out, control_point_ratio =
         Sampling resolution of the final streamline after interpolation (default : 1.0).
 
     verbose : boolean
-        Print information and progess (default : False).
+        Print information and progess (default : True).
     """
 
     try :
-        trk_fibers, trk_hdr = nibabel.trackvis.read( trk_filename_in, as_generator=True )
+        basename, extension = splitext(filename_tractogram)
+        tractogram_in = nibabel.streamlines.load( filename_tractogram, lazy_load=True )
+        hdr = tractogram_in.header
+        if extension == ".trk":
+            n_count = int( hdr['nb_streamlines'] )
+        else:
+            n_count = int( hdr['count'] )
     except :
         raise IOError( 'Track file not found' )
 
     if control_point_ratio < 0 or control_point_ratio > 1 :
         raise ValueError( "'control_point_ratio' parameter must be in [0..1]" )
+    
+    if filename_tractogram_out is None :
+        filename_tractogram_out = basename+'_smooth'+extension
 
     if verbose :
-        print '* input tractogram :'
-        print '\t- %s' % trk_filename_in
-        print '\t- %d fibers' % trk_hdr['n_count']
-        print '\t- %d x %d x %d' % ( trk_hdr['dim'][0], trk_hdr['dim'][1], trk_hdr['dim'][2] )
-        print '\t- %.4f x %.4f x %.4f' % ( trk_hdr['voxel_size'][0], trk_hdr['voxel_size'][1], trk_hdr['voxel_size'][2] )
-        print '* output tractogram :'
-        print '\t- %s' % trk_filename_out
-        print '\t- control points : %.1f%%' % (control_point_ratio*100.0)
-        print '\t- segment length : %.2f' % segment_len
+        print( '* input tractogram :' )
+        print( f'\t- {filename_tractogram}' )
+        print( f'\t- {n_count} fibers' )
+        
+        mb = getsize( filename_tractogram )/1.0E6
+        if mb >= 1E3:
+            print( f'\t- {mb/1.0E3:.2f} GB' )
+        else:            
+            print( f'\t- {mb:.2f} MB' )
+        
+        print( '* output tractogram :' )
+        print( f'\t- {filename_tractogram_out}' )
+        print( f'\t- control points : {control_point_ratio*100.0:.1f}%')
+        print( f'\t- segment length : {segment_len:.2f}' )
 
     # create the structure for the input and output polyline
     cdef float [:, ::1] npaFiberI
@@ -61,20 +77,24 @@ cpdef spline_smoothing( trk_filename_in, trk_filename_out, control_point_ratio =
     cdef float [:, ::1] npaFiberO = np.ascontiguousarray( np.zeros( (3*10000,1) ).astype(np.float32) )
     cdef float* ptr_npaFiberO = &npaFiberO[0,0]
 
-    trk_fiber_out = []
+    streamlines_out = []
     if verbose :
-        progress = ProgressBar( n=trk_hdr['n_count'], prefix="", erase=True )
-    for f in trk_fibers :
-        streamline = np.ascontiguousarray( f[0].copy() )
-        npaFiberI = streamline
+        progress = ProgressBar( n=n_count, prefix="", erase=True )
+    for f in tractogram_in.streamlines:
+        npaFiberI = np.ascontiguousarray( f.copy() )
         ptr_npaFiberI = &npaFiberI[0,0]
 
-        n = do_spline_smoothing( ptr_npaFiberI, f[0].shape[0], ptr_npaFiberO, control_point_ratio, segment_len )
-        streamline = np.reshape( npaFiberO[:3*n].copy(), (n,3) )
-        trk_fiber_out.append( (streamline, None, f[2]) )
+        n = do_spline_smoothing( ptr_npaFiberI, f.shape[0], ptr_npaFiberO, control_point_ratio, segment_len )
+
+        streamlines_out.append( np.reshape( npaFiberO[:3*n].copy(), (n,3) ) )
         if verbose :
             progress.update()
 
-    trk_hdr_out = trk_hdr.copy()
-    trk_hdr_out['n_scalars'] = 0
-    nibabel.trackvis.write( trk_filename_out, trk_fiber_out, trk_hdr_out ) # after resampling, scalars have no meaning
+    tractogram_out = nibabel.streamlines.Tractogram(streamlines_out, affine_to_rasmm=tractogram_in.tractogram.affine_to_rasmm)
+    nibabel.streamlines.save(tractogram_out, filename_tractogram_out)
+
+    mb = getsize( filename_tractogram_out )/1.0E6
+    if mb >= 1E3:
+        print( f'\t- {mb/1.0E3:.2f} GB' )
+    else:            
+        print( f'\t- {mb:.2f} MB' )
